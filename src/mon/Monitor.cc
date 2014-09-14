@@ -2297,7 +2297,8 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
   } else {
     ss << "    cluster " << monmap->get_fsid() << "\n";
     ss << "     health " << health << "\n";
-    ss << "     monmap " << *monmap << ", election epoch " << get_epoch()
+    ss << "     monmap " << *monmap << "\n";
+    ss << "            election epoch " << get_epoch()
        << ", quorum " << get_quorum() << " " << get_quorum_names() << "\n";
     if (mdsmon()->mdsmap.get_enabled())
       ss << "     mdsmap " << mdsmon()->mdsmap << "\n";
