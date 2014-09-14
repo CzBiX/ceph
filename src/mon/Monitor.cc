@@ -2130,7 +2130,8 @@ void Monitor::get_mon_status(Formatter *f, ostream& ss)
   }
 }
 
-void Monitor::get_health(string& status, bufferlist *detailbl, Formatter *f)
+void Monitor::get_health(string& status, bufferlist *detailbl, Formatter *f,
+			 string prefix, string sep)
 {
   list<pair<health_status_t,string> > summary;
   list<pair<health_status_t,string> > detail;
@@ -2152,7 +2153,7 @@ void Monitor::get_health(string& status, bufferlist *detailbl, Formatter *f)
   stringstream ss;
   health_status_t overall = HEALTH_OK;
   if (!summary.empty()) {
-    ss << ' ';
+    ss << prefix;
     while (!summary.empty()) {
       if (overall > summary.front().first)
 	overall = summary.front().first;
@@ -2165,7 +2166,7 @@ void Monitor::get_health(string& status, bufferlist *detailbl, Formatter *f)
       }
       summary.pop_front();
       if (!summary.empty())
-	ss << "; ";
+	ss << sep;
     }
   }
   if (f)
@@ -2217,8 +2218,10 @@ void Monitor::get_health(string& status, bufferlist *detailbl, Formatter *f)
     }
     if (!warns.empty()) {
       if (!ss.str().empty())
-        ss << ";";
-      ss << " clock skew detected on";
+	ss << sep;
+      else
+	ss << prefix;
+      ss << "clock skew detected on";
       while (!warns.empty()) {
         ss << " mon." << warns.front();
         warns.pop_front();
@@ -2263,7 +2266,7 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f)
 
   // reply with the status for all the components
   string health;
-  get_health(health, NULL, f);
+  get_health(health, NULL, f, "\n            ", "\n            ");
 
   if (f) {
     f->dump_stream("fsid") << monmap->get_fsid();
@@ -2629,7 +2632,8 @@ void Monitor::handle_command(MMonCommand *m)
       rdata.append(ds);
     } else if (prefix == "health") {
       string health_str;
-      get_health(health_str, detail == "detail" ? &rdata : NULL, f.get());
+      get_health(health_str, detail == "detail" ? &rdata : NULL, f.get(),
+		 " ", "; ");
       if (f) {
         f->flush(ds);
         ds << '\n';
@@ -2683,7 +2687,7 @@ void Monitor::handle_command(MMonCommand *m)
     f->dump_string("tag", tagstr);
 
     string hs;
-    get_health(hs, NULL, f.get());
+    get_health(hs, NULL, f.get(), " ", "; ");
 
     monmon()->dump_info(f.get());
     osdmon()->dump_info(f.get());
@@ -3383,7 +3387,7 @@ void Monitor::handle_ping(MPing *m)
   f->open_object_section("pong");
 
   string health_str;
-  get_health(health_str, NULL, f);
+  get_health(health_str, NULL, f, " ", "; ");
   {
     stringstream ss;
     get_mon_status(f, ss);
