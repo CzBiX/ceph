@@ -38,6 +38,7 @@ using std::fstream;
 //#include "barrier.h"
 
 #include "mds/mdstypes.h"
+#include "mds/MDSMap.h"
 
 #include "msg/Message.h"
 #include "msg/Dispatcher.h"
@@ -85,6 +86,16 @@ enum {
   l_c_last,
 };
 
+
+struct CommandOp
+{
+  ConnectionRef con;
+  mds_gid_t     mds_gid;
+  ceph_tid_t    tid;
+  Context      *on_finish;
+  bufferlist   *outbl;
+  std::string  *outs;
+};
 
 
 // ============================================
@@ -241,6 +252,16 @@ public:
   // mds sessions
   map<int, MetaSession*> mds_sessions;  // mds -> push seq
   list<Cond*> waiting_for_mdsmap;
+
+  // MDS command state
+  ceph_tid_t next_command_tid;
+  std::map<ceph_tid_t, CommandOp> commands;
+  void handle_command_reply(MCommandReply *m);
+  int resolve_mds(
+      const char *mds_id,
+      mds_gid_t mds_gid,
+      mds_rank_t mds_rank,
+      std::vector<mds_gid_t> *targets);
 
   void get_session_metadata(std::map<std::string, std::string> *meta) const;
   bool have_open_session(int mds);
@@ -668,6 +689,14 @@ private:
 public:
   int mount(const std::string &mount_root);
   void unmount();
+
+    int mds_command(
+      const char *mds_id,
+      mds_gid_t mds_gid,
+      mds_rank_t mds_rank,
+      const std::vector<std::string>& cmd,
+      const bufferlist& inbl,
+      bufferlist *poutbl, std::string *prs, Context *onfinish);
 
   // these shoud (more or less) mirror the actual system calls.
   int statfs(const char *path, struct statvfs *stbuf);

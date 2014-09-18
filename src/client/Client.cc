@@ -47,6 +47,7 @@ using namespace std;
 #include "messages/MClientCapRelease.h"
 #include "messages/MClientLease.h"
 #include "messages/MClientSnap.h"
+#include "messages/MCommandReply.h"
 
 #include "messages/MGenericMessage.h"
 
@@ -54,7 +55,6 @@ using namespace std;
 
 #include "mon/MonClient.h"
 
-#include "mds/MDSMap.h"
 #include "osd/OSDMap.h"
 #include "mon/MonMap.h"
 
@@ -166,6 +166,7 @@ Client::Client(Messenger *m, MonClient *mc)
     objecter_finisher(m->cct),
     tick_event(NULL),
     monclient(mc), messenger(m), whoami(m->get_myname().num()),
+    next_command_tid(1),
     initialized(false), mounted(false), unmounting(false),
     local_osd(-1), local_osd_epoch(0),
     unsafe_sync_write(0),
@@ -1975,7 +1976,13 @@ bool Client::ms_dispatch(Message *m)
   case CEPH_MSG_CLIENT_LEASE:
     handle_lease(static_cast<MClientLease*>(m));
     break;
-
+  case MSG_COMMAND_REPLY:
+    if (m->get_source().type() == CEPH_ENTITY_TYPE_MDS) {
+      handle_command_reply(static_cast<MCommandReply*>(m));
+    } else {
+      return false;
+    }
+    break;
   default:
     return false;
   }
@@ -2013,6 +2020,30 @@ void Client::handle_mds_map(MMDSMap* m)
   MDSMap *oldmap = mdsmap;
   mdsmap = new MDSMap;
   mdsmap->decode(m->get_encoded());
+
+  // Cancel any commands for missing or laggy GIDs
+  std::list<ceph_tid_t> cancel_ops;
+  for (std::map<ceph_tid_t, CommandOp>::iterator i = commands.begin();
+       i != commands.end(); ++i) {
+    const mds_gid_t op_mds_gid = i->second.mds_gid;
+    if (mdsmap->is_dne_gid(op_mds_gid) || mdsmap->is_laggy_gid(op_mds_gid)) {
+      ldout(cct, 1) << __func__ << ": cancelling command op " << i->first << dendl;
+      cancel_ops.push_back(i->first);
+      if (i->second.outs) {
+        std::ostringstream ss;
+        ss << "MDS " << op_mds_gid << " went away";
+        *(i->second.outs) = ss.str();
+      }
+      if (i->second.on_finish) {
+        i->second.on_finish->complete(-ETIMEDOUT);
+      }
+    }
+  }
+
+  for (std::list<ceph_tid_t>::iterator i = cancel_ops.begin();
+       i != cancel_ops.end(); ++i) {
+    commands.erase(*i);
+  }
 
   // reset session
   for (map<int,MetaSession*>::iterator p = mds_sessions.begin();
@@ -4013,6 +4044,192 @@ inodeno_t Client::_get_inodeno(Inode *in)
 {
   /* The caller must hold the client lock */
   return in->ino;
+}
+
+
+int Client::resolve_mds(
+    const char *mds_id,
+    mds_gid_t mds_gid,
+    mds_rank_t mds_rank,
+    std::vector<mds_gid_t> *targets)
+{
+  // Resolve arguments to list of GIDs
+  if (mds_id != NULL) {
+    if (!(mds_gid == 0 && mds_rank == -1)) {
+      lderr(cct) << __func__ << ": multiple MDS identifiers passed" << dendl;
+      return -EINVAL;
+    }
+
+    if (std::string(mds_id) == "*") {
+      const std::map<mds_gid_t, MDSMap::mds_info_t> &mds_info = mdsmap->get_mds_info();
+      for (std::map<mds_gid_t, MDSMap::mds_info_t>::const_iterator i = mds_info.begin();
+          i != mds_info.end(); ++i) {
+        targets->push_back(i->first);
+      }
+    } else {
+      mds_gid = mdsmap->find_mds_gid_by_name(mds_id);
+      if (mds_gid == 0) {
+        lderr(cct) << "MDS ID '" << mds_id << "' not found" << dendl;
+        return -ENOENT;
+      } else {
+        ldout(cct, 10) << __func__ << ": resolved ID '" << mds_id << "' to GID " << mds_gid << dendl;
+        targets->push_back(mds_gid);
+      }
+    }
+  } else if (mds_gid != 0) {
+    if (!(mds_id == NULL && mds_rank == -1)) {
+      lderr(cct) << __func__ << ": multiple MDS identifiers passed" << dendl;
+      return -EINVAL;
+    }
+
+    if (mdsmap->is_dne_gid(mds_gid)) {
+      lderr(cct) << __func__ << ": GID " << mds_gid << " not in MDS map" << dendl;
+      return -ENOENT;
+    } else {
+      ldout(cct, 10) << __func__ << ": validated GID " << mds_gid << dendl;
+      targets->push_back(mds_gid);
+    }
+
+  } else if (mds_rank != -1) {
+    if (!(mds_id == NULL && mds_gid == 0)) {
+      lderr(cct) << __func__ << ": multiple MDS identifiers passed" << dendl;
+      return -EINVAL;
+    }
+
+    if (mdsmap->is_dne(mds_rank)) {
+      lderr(cct) << __func__ << ": MDS rank " << mds_rank << " does not exist" << dendl;
+      return -ENOENT;
+    }
+
+    if (!mdsmap->is_up(mds_rank)) {
+      lderr(cct) << __func__ << ": MDS rank " << mds_rank << " is not up" << dendl;
+      return -EAGAIN;
+    }
+
+    mds_gid = mdsmap->get_info(mds_rank).global_id;
+    ldout(cct, 10) << __func__ << ": resolved rank " << mds_rank << " to GID " << mds_gid << dendl;
+    targets->push_back(mds_gid);
+  } else {
+    lderr(cct) << __func__ << ": no MDS identifier passed" << dendl;
+    return -EINVAL;
+  }
+
+  return 0;
+}
+
+
+/**
+ *
+ * @mds_id null-terminated ID of target MDS, or NULL
+ * @mds_gid GID of target MDS, or 0
+ * @mds_rank Rank for target MDS, or -1
+ *
+ */
+int Client::mds_command(
+    const char *mds_id,
+    mds_gid_t mds_gid,
+    mds_rank_t mds_rank,
+    const vector<string>& cmd,
+    const bufferlist& inbl,
+    bufferlist *outbl,
+    string *outs,
+    Context *onfinish)
+{
+  Mutex::Locker lock(client_lock);
+
+  assert(initialized);
+
+  // FIXME this init part is common to mount()
+  // >>>
+  client_lock.Unlock();
+  int r = monclient->authenticate(cct->_conf->client_mount_timeout);
+  client_lock.Lock();
+  if (r < 0)
+    return r;
+
+  whoami = monclient->get_global_id();
+  messenger->set_myname(entity_name_t::CLIENT(whoami.v));
+  // <<<
+
+  // Block until we have an MDSMap to resolve IDs
+  if (mdsmap->get_epoch() == 0) {
+    wait_on_list(waiting_for_mdsmap);
+  }
+
+  // Look up MDS target(s) of the command
+  std::vector<mds_gid_t> targets;
+  r = resolve_mds(mds_id, mds_gid, mds_rank, &targets);
+  if (r < 0) {
+    return r;
+  }
+
+  // If ID was '*' then we might find 0 targets
+  if (targets.size() == 0) {
+    if (onfinish) {
+      onfinish->complete(0);
+    }
+
+    return 0;
+  }
+
+  // Send commands to targets
+  for (std::vector<mds_gid_t>::iterator target = targets.begin();
+      target != targets.end(); ++target) {
+    ceph_tid_t tid = next_command_tid++;
+
+    // Open a connection to the target MDS
+    entity_inst_t inst = mdsmap->get_info_gid(*target).get_inst();
+    ConnectionRef conn = messenger->get_connection(inst);
+
+    // Generate CommandOp state
+    CommandOp op;
+    op.tid = tid;
+    op.on_finish = onfinish;
+    op.outbl = outbl;
+    op.outs = outs;
+    op.mds_gid = *target;
+    commands[op.tid] = op;
+
+    ldout(cct, 4) << __func__ << ": new command op to " << *target
+      << " tid=" << op.tid << cmd << dendl;
+
+    // Construct and send MCommand
+    MCommand *m = new MCommand(monclient->get_fsid());
+    m->cmd = cmd;
+    m->set_data(inbl);
+    m->set_tid(tid);
+    conn->send_message(m);
+  }
+
+  return 0;
+}
+
+void Client::handle_command_reply(MCommandReply *m)
+{
+  ceph_tid_t const tid = m->get_tid();
+
+  ldout(cct, 10) << __func__ << ": tid=" << m->get_tid() << dendl;
+
+  map<ceph_tid_t, CommandOp>::iterator opiter = commands.find(tid);
+  if (opiter == commands.end()) {
+    ldout(cct, 1) << __func__ << ": unknown tid " << tid << ", dropping" << dendl;
+    m->put();
+    return;
+  }
+
+  CommandOp const &op = opiter->second;
+  if (op.outbl) {
+    op.outbl->claim(m->get_data());
+  }
+  if (op.outs) {
+    *op.outs = m->rs;
+  }
+
+  if (op.on_finish) {
+    op.on_finish->complete(m->r);
+  }
+
+  m->put();
 }
 
 
