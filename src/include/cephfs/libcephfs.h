@@ -161,6 +161,38 @@ int ceph_create_with_context(struct ceph_mount_info **cmount, struct CephContext
  */
 int ceph_mount(struct ceph_mount_info *cmount, const char *root);
 
+
+/**
+ * Execute a management command remotely on an MDS.
+ *
+ * @param mds_id 
+ * @param array of null-terminated strings
+ * @param cmdline length of cmd array
+ * @param inbuf non-null-terminated input data to command
+ * @param inbuflen length in octets of inbuf
+ * @param outbuf populated with pointer to buffer (command output data)
+ * @param outbuflen length of allocated outbuf
+ * @param outs populated with pointer to buffer (command error strings)
+ * @param outslen length of allocated outs
+ *
+ * @return 0 on success, negative error code on failure
+ *
+ */
+int ceph_mds_command(struct ceph_mount_info *cmount,
+    const char *mds_id,
+    uint64_t mds_gid,
+    int32_t mds_rank,
+    const char **cmd,
+    size_t cmdlen,
+    const char *inbuf, size_t inbuflen,
+    char **outbuf, size_t *outbuflen,
+    char **outs, size_t *outslen);
+
+/**
+ * Free a buffer, such as those used for output arrays from ceph_mds_command
+ */
+void ceph_buffer_free(char *buf);
+
 /**
  * Unmount a mount handle.
  *
