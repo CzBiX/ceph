@@ -202,7 +202,8 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   scrub_after_recovery(false),
   active_pushes(0),
   recovery_state(this),
-  pg_id(p)
+  pg_id(p),
+  peer_features((uint64_t)-1)
 {
 #ifdef PG_DEBUG_REFS
   osd->add_pgid(p, this);
@@ -6705,6 +6706,7 @@ PG::RecoveryState::GetInfo::GetInfo(my_context ctx)
   if (!prior_set.get())
     pg->build_prior(prior_set);
 
+  pg->reset_peer_features();
   get_infos();
   if (peer_info_requested.empty() && !prior_set->pg_down) {
     post_event(GotInfo());
@@ -6780,6 +6782,9 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
       }
       get_infos();
     }
+    dout(30) << "Adding osd: " << infoevt.from.osd << " features: "
+      << hex << infoevt.features << dec << dendl;
+    pg->apply_peer_features(infoevt.features);
 
     // are we done getting everything?
     if (peer_info_requested.empty() && !prior_set->pg_down) {
@@ -6838,6 +6843,7 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
 	  break;
 	}
       }
+      dout(30) << "Common features: " << hex << pg->get_min_peer_features() << dec << dendl;
       post_event(GotInfo());
     }
   }
