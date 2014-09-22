@@ -1013,6 +1013,44 @@ def find_cmd_target(childargs):
 
     return 'mon', ''
 
+
+def _parse_mds_spec(spec_str):
+    """
+    Convert MDS specifier into a 3-tuple of ID, GID, rank.
+    """
+    # Special case: wildcard
+    if spec_str == "*":
+        return "*", None, None
+
+    # Implicit form mds.<rank>
+    match = re.match("\d+", spec_str)
+    if match:
+        try:
+            return None, None, int(spec_str)
+        except ValueError:
+            raise ArgumentError("Invalid MDS rank '{0}'".format(spec_str))
+
+    # Explicit form: mds.[rank=<rank>]
+    match = re.match("\[(rank|id|gid)=(\w+)\]", spec_str)
+    if match is None:
+        raise ArgumentError("Invalid MDS specification '{0}'".format(spec_str))
+
+    id_type, id_val = match.groups()
+    if id_type == "rank":
+        try:
+            return None, None, int(id_val)
+        except ValueError:
+            # Not an integer
+            raise ArgumentError("Invalid MDS rank '{0}'".format(id_val))
+    elif id_type == "id":
+        return id_val, None, None
+    elif id_type == "gid":
+        try:
+            return None, int(id_val), None
+        except ValueError:
+            # Not an integer
+            raise ArgumentError("Invalid MDS GID '{0}'".format(id_val))
+
 def send_command(cluster, target=('mon', ''), cmd=None, inbuf='', timeout=0,
                  verbose=False):
     """
@@ -1030,13 +1068,12 @@ def send_command(cluster, target=('mon', ''), cmd=None, inbuf='', timeout=0,
     try:
         if target[0] == 'osd':
             osdid = target[1]
-
             if verbose:
-                print >> sys.stderr, 'submit {0} to osd.{1}'.\
-                    format(cmd, osdid)
+                print >> sys.stderr, 'submit {0} to {1}.{2}'.\
+                    format(cmd, target[0], target[1])
+
             ret, outbuf, outs = \
                 cluster.osd_command(osdid, cmd, inbuf, timeout)
-
         elif target[0] == 'pg':
             pgid = target[1]
             # pgid will already be in the command for the pg <pgid>
@@ -1061,6 +1098,24 @@ def send_command(cluster, target=('mon', ''), cmd=None, inbuf='', timeout=0,
                 ret, outbuf, outs = cluster.mon_command(cmd, inbuf, timeout)
             else:
                 ret, outbuf, outs = cluster.mon_command(cmd, inbuf, timeout, target[1])
+        elif target[0] == 'mds':
+            mds_id = target[1]
+
+            if verbose:
+                print >> sys.stderr, 'submit {0} to mds.{1}'.\
+                    format(cmd, mds_id)
+
+            try:
+                from cephfs import LibCephFS
+            except ImportError:
+                raise RuntimeError("CephFS unavailable, have you installed libcephfs?")
+
+            filesystem = LibCephFS(cluster.conf_defaults, cluster.conffile)
+            filesystem.conf_parse_argv(cluster.parsed_args)
+            
+            mds_id, mds_gid, mds_rank = _parse_mds_spec(mds_id)
+            ret, outbuf, outs = \
+                filesystem.mds_command(mds_id, mds_gid, mds_rank, cmd, inbuf)
         else:
             raise ArgumentValid("Bad target type '{0}'".format(target[0]))
 
@@ -1109,7 +1164,7 @@ def json_command(cluster, target=('mon', ''), prefix=None, argdict=None,
 
     except Exception as e:
         if not isinstance(e, ArgumentError):
-            raise RuntimeError('"{0}": exception {1}'.format(cmd, e))
+            raise RuntimeError('"{0}": exception {1}'.format(argdict, e))
         else:
             raise
 
