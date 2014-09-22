@@ -443,13 +443,20 @@ private:
   // messages
   bool _dispatch(Message *m);
 
+  protected:
   bool is_stale_message(Message *m);
 
   bool handle_core_message(Message *m);
   bool handle_deferrable_message(Message *m);
   
   // special message types
+  int _handle_command(
+      std::vector<std::string> args,
+      bufferlist const &inbl,
+      bufferlist *outbl,
+      std::string *outs);
   void handle_command(class MMonCommand *m);
+  void handle_command(class MCommand *m);
   void handle_mds_map(class MMDSMap *m);
 };
 

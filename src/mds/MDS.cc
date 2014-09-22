@@ -64,6 +64,8 @@
 #include "messages/MMDSTableRequest.h"
 
 #include "messages/MMonCommand.h"
+#include "messages/MCommand.h"
+#include "messages/MCommandReply.h"
 
 #include "auth/AuthAuthorizeHandler.h"
 #include "auth/KeyRing.h"
@@ -799,94 +801,123 @@ void MDS::check_ops_in_flight()
   return;
 }
 
+/* This function DOES put the passed message before returning*/
+void MDS::handle_command(MCommand *m)
+{
+  // FIXME authorize based on m->get_connection()
+  bufferlist outbl;
+  std::string outs;
+  int r = _handle_command(m->cmd, m->get_data(), &outbl, &outs);
+  MCommandReply *reply = new MCommandReply(r, outs);
+  reply->set_tid(m->get_tid());
+  reply->set_data(outbl);
+  m->get_connection()->send_message(reply); // FIXME is gconnection guaranteed to be set here?
+
+  m->put();
+}
 
 /* This function DOES put the passed message before returning*/
 void MDS::handle_command(MMonCommand *m)
 {
-  dout(10) << "handle_command args: " << m->cmd << dendl;
-  if (m->cmd[0] == "injectargs") {
-    if (m->cmd.size() < 2) {
+  bufferlist outbl;
+  std::string outs;
+  _handle_command(m->cmd, m->get_data(), &outbl, &outs);
+  m->put();
+}
+
+int MDS::_handle_command(
+    std::vector<std::string> args,
+    bufferlist const &inbl,
+    bufferlist *outbl,
+    std::string *outs)
+{
+  assert(outbl != NULL);
+  assert(outs != NULL);
+
+  dout(10) << "handle_command args: " << args << dendl;
+  if (args[0] == "injectargs") {
+    if (args.size() < 2) {
       derr << "Ignoring empty injectargs!" << dendl;
     }
     else {
       std::ostringstream oss;
       mds_lock.Unlock();
-      g_conf->injectargs(m->cmd[1], &oss);
+      g_conf->injectargs(args[1], &oss);
       mds_lock.Lock();
       derr << "injectargs:" << dendl;
       derr << oss.str() << dendl;
     }
   }
-  else if (m->cmd[0] == "dumpcache") {
-    if (m->cmd.size() > 1)
-      mdcache->dump_cache(m->cmd[1].c_str());
+  else if (args[0] == "dumpcache") {
+    if (args.size() > 1)
+      mdcache->dump_cache(args[1].c_str());
     else
       mdcache->dump_cache();
   }
-  else if (m->cmd[0] == "exit") {
+  else if (args[0] == "exit") {
     suicide();
   }
-  else if (m->cmd[0] == "respawn") {
+  else if (args[0] == "respawn") {
     respawn();
   }
-  else if (m->cmd[0] == "session" && m->cmd[1] == "kill") {
+  else if (args[0] == "session" && args[1] == "kill") {
     Session *session = sessionmap.get_session(entity_name_t(CEPH_ENTITY_TYPE_CLIENT,
-							    strtol(m->cmd[2].c_str(), 0, 10)));
+							    strtol(args[2].c_str(), 0, 10)));
     if (session)
       server->kill_session(session, NULL);
     else
       dout(15) << "session " << session << " not in sessionmap!" << dendl;
-  } else if (m->cmd[0] == "issue_caps") {
-    long inum = strtol(m->cmd[1].c_str(), 0, 10);
+  } else if (args[0] == "issue_caps") {
+    long inum = strtol(args[1].c_str(), 0, 10);
     CInode *in = mdcache->get_inode(inodeno_t(inum));
     if (in) {
       bool r = locker->issue_caps(in);
       dout(20) << "called issue_caps on inode "  << inum
 	       << " with result " << r << dendl;
     } else dout(15) << "inode " << inum << " not in mdcache!" << dendl;
-  } else if (m->cmd[0] == "try_eval") {
-    long inum = strtol(m->cmd[1].c_str(), 0, 10);
-    int mask = strtol(m->cmd[2].c_str(), 0, 10);
+  } else if (args[0] == "try_eval") {
+    long inum = strtol(args[1].c_str(), 0, 10);
+    int mask = strtol(args[2].c_str(), 0, 10);
     CInode * ino = mdcache->get_inode(inodeno_t(inum));
     if (ino) {
       locker->try_eval(ino, mask);
       dout(20) << "try_eval(" << inum << ", " << mask << ")" << dendl;
     } else dout(15) << "inode " << inum << " not in mdcache!" << dendl;
-  } else if (m->cmd[0] == "fragment_dir") {
-    if (m->cmd.size() == 4) {
-      filepath fp(m->cmd[1].c_str());
+  } else if (args[0] == "fragment_dir") {
+    if (args.size() == 4) {
+      filepath fp(args[1].c_str());
       CInode *in = mdcache->cache_traverse(fp);
       if (in) {
 	frag_t fg;
-	if (fg.parse(m->cmd[2].c_str())) {
+	if (fg.parse(args[2].c_str())) {
 	  CDir *dir = in->get_dirfrag(fg);
 	  if (dir) {
 	    if (dir->is_auth()) {
-	      int by = atoi(m->cmd[3].c_str());
+	      int by = atoi(args[3].c_str());
 	      if (by)
 		mdcache->split_dir(dir, by);
 	      else
 		dout(0) << "need to split by >0 bits" << dendl;
 	    } else dout(0) << "dir " << dir->dirfrag() << " not auth" << dendl;
 	  } else dout(0) << "dir " << in->ino() << " " << fg << " dne" << dendl;
-	} else dout(0) << " frag " << m->cmd[2] << " does not parse" << dendl;
+	} else dout(0) << " frag " << args[2] << " does not parse" << dendl;
       } else dout(0) << "path " << fp << " not found" << dendl;
     } else dout(0) << "bad syntax" << dendl;
-  } else if (m->cmd[0] == "merge_dir") {
-    if (m->cmd.size() == 3) {
-      filepath fp(m->cmd[1].c_str());
+  } else if (args[0] == "merge_dir") {
+    if (args.size() == 3) {
+      filepath fp(args[1].c_str());
       CInode *in = mdcache->cache_traverse(fp);
       if (in) {
 	frag_t fg;
-	if (fg.parse(m->cmd[2].c_str())) {
+	if (fg.parse(args[2].c_str())) {
 	  mdcache->merge_dir(in, fg);
-	} else dout(0) << " frag " << m->cmd[2] << " does not parse" << dendl;
+	} else dout(0) << " frag " << args[2] << " does not parse" << dendl;
       } else dout(0) << "path " << fp << " not found" << dendl;
     } else dout(0) << "bad syntax" << dendl;
-  } else if (m->cmd[0] == "export_dir") {
-    if (m->cmd.size() == 3) {
-      filepath fp(m->cmd[1].c_str());
-      int target = atoi(m->cmd[2].c_str());
+  } else if (args[0] == "export_dir") {
+    if (args.size() == 3) {
+      filepath fp(args[1].c_str());
+      int target = atoi(args[2].c_str());
       if (target != whoami && mdsmap->is_up(target) && mdsmap->is_in(target)) {
 	CInode *in = mdcache->cache_traverse(fp);
 	if (in) {
@@ -898,23 +929,28 @@ void MDS::handle_command(MMonCommand *m)
       } else dout(0) << "bad export_dir target syntax" << dendl;
     } else dout(0) << "bad export_dir syntax" << dendl;
   } 
-  else if (m->cmd[0] == "cpu_profiler") {
+  else if (args[0] == "cpu_profiler") {
     ostringstream ss;
-    cpu_profiler_handle_command(m->cmd, ss);
+    cpu_profiler_handle_command(args, ss);
     clog->info() << ss.str();
   }
- else if (m->cmd[0] == "heap") {
-   if (!ceph_using_tcmalloc())
-     clog->info() << "tcmalloc not enabled, can't use heap profiler commands\n";
-   else {
-     ostringstream ss;
-     vector<std::string> cmdargs;
-     cmdargs.insert(cmdargs.begin(), m->cmd.begin()+1, m->cmd.end());
-     ceph_heap_profiler_handle_command(cmdargs, ss);
-     clog->info() << ss.str();
-   }
- } else dout(0) << "unrecognized command! " << m->cmd << dendl;
-  m->put();
+  else if (args[0] == "heap") {
+    if (!ceph_using_tcmalloc())
+      clog->info() << "tcmalloc not enabled, can't use heap profiler commands\n";
+    else {
+      ostringstream ss;
+      vector<std::string> cmdargs;
+      cmdargs.insert(cmdargs.begin(), args.begin()+1, args.end());
+      ceph_heap_profiler_handle_command(cmdargs, ss);
+      clog->info() << ss.str();
+    }
+  } else {
+    dout(0) << "unrecognized command! " << args << dendl;
+  }
+
+  // FIXME the clog output in this fn should all be setting outbl
+
+  return 0;
 }
 
 /* This function deletes the passed message before returning. */
@@ -1909,6 +1945,9 @@ bool MDS::handle_core_message(Message *m)
     break;    
 
     // OSD
+  case MSG_COMMAND:
+    handle_command(static_cast<MCommand*>(m));
+    break;
   case CEPH_MSG_OSD_MAP:
     ALLOW_MESSAGES_FROM(CEPH_ENTITY_TYPE_MON | CEPH_ENTITY_TYPE_OSD);
     if (is_active() && snapserver)
