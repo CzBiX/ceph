@@ -1647,6 +1647,11 @@ int librados::Rados::pool_create_async(const char *name, uint64_t auid, __u8 cru
   return client->pool_create_async(str, c->pc, auid, crush_rule);
 }
 
+int librados::Rados::pool_get_tiers(int64_t pool_id, pool_tier_t *tiers)
+{
+  return client->pool_get_tiers(pool_id, tiers);
+}
+
 int librados::Rados::pool_delete(const char *name)
 {
   return client->pool_delete(name);
@@ -2602,6 +2607,29 @@ extern "C" int rados_pool_create_with_all(rados_t cluster, const char *name,
   string sname(name);
   int retval = radosp->pool_create(sname, auid, crush_rule_num);
   tracepoint(librados, rados_pool_create_with_all_exit, retval);
+  return retval;
+}
+
+extern "C" int rados_pool_get_tiers(rados_t cluster, int64_t pool_id, struct rados_pool_tier_t* tiers)
+{
+  tracepoint(librados, rados_pool_get_tiers_enter, cluster, pool_id);
+  librados::pool_tier_t tiering;
+  librados::RadosClient *client = (librados::RadosClient *)cluster;
+  int retval = client->pool_get_tiers(pool_id, &tiering);
+
+  int ntiers = tiering.tiers.size();
+  tiers->tiers_len = ntiers;
+  tiers->tiers = (uint64_t*)malloc(sizeof(uint64_t) * ntiers);
+  int i = 0;
+  for (set<uint64_t>::iterator itr = tiering.tiers.begin(), end = tiering.tiers.end(); itr != end; ++itr) {
+    tiers->tiers[i++] = *itr;
+  }
+  tiers->tier_of = tiering.tier_of;
+  tiers->read_tier = tiering.read_tier;
+  tiers->write_tier = tiering.write_tier;
+  tiers->cache_mode = tiering.cache_mode;
+
+  tracepoint(librados, rados_pool_get_tiers_exit, retval, tiers);
   return retval;
 }
 

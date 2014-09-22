@@ -24,6 +24,7 @@
 #include <boost/scoped_ptr.hpp>
 #include <boost/optional.hpp>
 
+#include "include/rados/librados.h"
 #include "include/rados/rados_types.hpp"
 
 #include "msg/msg_types.h"
@@ -843,47 +844,40 @@ struct pg_pool_t {
     return get_flags_string(flags);
   }
 
-  typedef enum {
-    CACHEMODE_NONE = 0,                  ///< no caching
-    CACHEMODE_WRITEBACK = 1,             ///< write to cache, flush later
-    CACHEMODE_FORWARD = 2,               ///< forward if not in cache
-    CACHEMODE_READONLY = 3,              ///< handle reads, forward writes [not strongly consistent]
-    CACHEMODE_READFORWARD = 4            ///< forward reads, write to cache flush later
-  } cache_mode_t;
-  static const char *get_cache_mode_name(cache_mode_t m) {
+  static const char *get_cache_mode_name(rados_cache_mode_t m) {
     switch (m) {
-    case CACHEMODE_NONE: return "none";
-    case CACHEMODE_WRITEBACK: return "writeback";
-    case CACHEMODE_FORWARD: return "forward";
-    case CACHEMODE_READONLY: return "readonly";
-    case CACHEMODE_READFORWARD: return "readforward";
+    case RADOS_CACHEMODE_NONE: return "none";
+    case RADOS_CACHEMODE_WRITEBACK: return "writeback";
+    case RADOS_CACHEMODE_FORWARD: return "forward";
+    case RADOS_CACHEMODE_READONLY: return "readonly";
+    case RADOS_CACHEMODE_READFORWARD: return "readforward";
     default: return "unknown";
     }
   }
-  static cache_mode_t get_cache_mode_from_str(const string& s) {
+  static rados_cache_mode_t get_cache_mode_from_str(const string& s) {
     if (s == "none")
-      return CACHEMODE_NONE;
+      return RADOS_CACHEMODE_NONE;
     if (s == "writeback")
-      return CACHEMODE_WRITEBACK;
+      return RADOS_CACHEMODE_WRITEBACK;
     if (s == "forward")
-      return CACHEMODE_FORWARD;
+      return RADOS_CACHEMODE_FORWARD;
     if (s == "readonly")
-      return CACHEMODE_READONLY;
+      return RADOS_CACHEMODE_READONLY;
     if (s == "readforward")
-      return CACHEMODE_READFORWARD;
-    return (cache_mode_t)-1;
+      return RADOS_CACHEMODE_READFORWARD;
+    return (rados_cache_mode_t)-1;
   }
   const char *get_cache_mode_name() const {
     return get_cache_mode_name(cache_mode);
   }
   bool cache_mode_requires_hit_set() const {
     switch (cache_mode) {
-    case CACHEMODE_NONE:
-    case CACHEMODE_FORWARD:
-    case CACHEMODE_READONLY:
+    case RADOS_CACHEMODE_NONE:
+    case RADOS_CACHEMODE_FORWARD:
+    case RADOS_CACHEMODE_READONLY:
       return false;
-    case CACHEMODE_WRITEBACK:
-    case CACHEMODE_READFORWARD:
+    case RADOS_CACHEMODE_WRITEBACK:
+    case RADOS_CACHEMODE_READFORWARD:
       return true;
     default:
       assert(0 == "implement me");
@@ -933,7 +927,7 @@ public:
   // Note that write wins for read+write ops
   int64_t read_tier;       ///< pool/tier for objecter to direct reads to
   int64_t write_tier;      ///< pool/tier for objecter to direct writes to
-  cache_mode_t cache_mode;  ///< cache pool mode
+  rados_cache_mode_t cache_mode;  ///< cache pool mode
 
   bool is_tier() const { return tier_of >= 0; }
   bool has_tiers() const { return !tiers.empty(); }
@@ -948,9 +942,9 @@ public:
   bool has_write_tier() const { return write_tier >= 0; }
   void clear_write_tier() { write_tier = -1; }
   void clear_tier_tunables() {
-    if (cache_mode != CACHEMODE_NONE)
+    if (cache_mode != RADOS_CACHEMODE_NONE)
       flags |= FLAG_INCOMPLETE_CLONES;
-    cache_mode = CACHEMODE_NONE;
+    cache_mode = RADOS_CACHEMODE_NONE;
 
     target_max_bytes = 0;
     target_max_objects = 0;
@@ -992,7 +986,7 @@ public:
       quota_max_bytes(0), quota_max_objects(0),
       pg_num_mask(0), pgp_num_mask(0),
       tier_of(-1), read_tier(-1), write_tier(-1),
-      cache_mode(CACHEMODE_NONE),
+      cache_mode(RADOS_CACHEMODE_NONE),
       target_max_bytes(0), target_max_objects(0),
       cache_target_dirty_ratio_micro(0),
       cache_target_full_ratio_micro(0),
@@ -1021,7 +1015,7 @@ public:
 
   /// true if incomplete clones may be present
   bool allow_incomplete_clones() const {
-    return cache_mode != CACHEMODE_NONE || has_flag(FLAG_INCOMPLETE_CLONES);
+    return cache_mode != RADOS_CACHEMODE_NONE || has_flag(FLAG_INCOMPLETE_CLONES);
   }
 
   unsigned get_type() const { return type; }

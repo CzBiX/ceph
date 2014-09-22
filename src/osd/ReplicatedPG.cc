@@ -1598,10 +1598,10 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
   }
 
   switch (pool.info.cache_mode) {
-  case pg_pool_t::CACHEMODE_NONE:
+  case RADOS_CACHEMODE_NONE:
     return false;
 
-  case pg_pool_t::CACHEMODE_WRITEBACK:
+  case RADOS_CACHEMODE_WRITEBACK:
     if (obc.get() && obc->obs.exists) {
       return false;
     }
@@ -1658,7 +1658,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
     }
     return true;
 
-  case pg_pool_t::CACHEMODE_FORWARD:
+  case RADOS_CACHEMODE_FORWARD:
     if (obc.get() && obc->obs.exists) {
       return false;
     }
@@ -1668,7 +1668,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
       do_cache_redirect(op, obc);
     return true;
 
-  case pg_pool_t::CACHEMODE_READONLY:
+  case RADOS_CACHEMODE_READONLY:
     // TODO: clean this case up
     if (obc.get() && obc->obs.exists) {
       return false;
@@ -1685,7 +1685,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
     // crap, there was a failure of some kind
     return false;
 
-  case pg_pool_t::CACHEMODE_READFORWARD:
+  case RADOS_CACHEMODE_READFORWARD:
     if (obc.get() && obc->obs.exists) {
       return false;
     }
@@ -3416,7 +3416,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  result = -EINVAL;
 	  break;
 	}
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == RADOS_CACHEMODE_NONE) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -3443,7 +3443,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  result = -EINVAL;
 	  break;
 	}
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == RADOS_CACHEMODE_NONE) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -3474,7 +3474,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       ++ctx->num_write;
       {
 	tracepoint(osd, do_osd_op_pre_cache_evict, soid.oid.name.c_str(), soid.snap.val);
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == RADOS_CACHEMODE_NONE) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -4846,7 +4846,7 @@ inline int ReplicatedPG::_delete_oid(OpContext *ctx, bool no_whiteout)
   oi.size = 0;
 
   // cache: cache: set whiteout on delete?
-  if (pool.info.cache_mode != pg_pool_t::CACHEMODE_NONE && !no_whiteout) {
+  if (pool.info.cache_mode != RADOS_CACHEMODE_NONE && !no_whiteout) {
     dout(20) << __func__ << " setting whiteout on " << soid << dendl;
     oi.set_flag(object_info_t::FLAG_WHITEOUT);
     ctx->delta_stats.num_whiteouts++;
@@ -5318,7 +5318,7 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
   }
 
   // cache: clear whiteout?
-  if (pool.info.cache_mode != pg_pool_t::CACHEMODE_NONE) {
+  if (pool.info.cache_mode != RADOS_CACHEMODE_NONE) {
     if (ctx->user_modify &&
 	ctx->obc->obs.oi.is_whiteout()) {
       dout(10) << __func__ << " clearing whiteout on " << soid << dendl;
@@ -6134,9 +6134,9 @@ void ReplicatedPG::finish_promote(int r, OpRequestRef op,
   bool whiteout = false;
   if (r == -ENOENT &&
       soid.snap == CEPH_NOSNAP &&
-      (pool.info.cache_mode == pg_pool_t::CACHEMODE_WRITEBACK ||
-       pool.info.cache_mode == pg_pool_t::CACHEMODE_READFORWARD ||
-       pool.info.cache_mode == pg_pool_t::CACHEMODE_READONLY)) {
+      (pool.info.cache_mode == RADOS_CACHEMODE_WRITEBACK ||
+       pool.info.cache_mode == RADOS_CACHEMODE_READFORWARD ||
+       pool.info.cache_mode == RADOS_CACHEMODE_READONLY)) {
     dout(10) << __func__ << " whiteout " << soid << dendl;
     whiteout = true;
   }
@@ -9724,7 +9724,7 @@ void ReplicatedPG::on_pool_change()
   // active the normal requeuing machinery is sufficient (and properly
   // ordered).
   if (is_active() &&
-      pool.info.cache_mode != pg_pool_t::CACHEMODE_WRITEBACK &&
+      pool.info.cache_mode != RADOS_CACHEMODE_WRITEBACK &&
       !waiting_for_cache_not_full.empty()) {
     dout(10) << __func__ << " requeuing full waiters (not in writeback) "
 	     << dendl;
@@ -11251,7 +11251,7 @@ void ReplicatedPG::agent_setup()
   assert(is_locked());
   if (!is_active() ||
       !is_primary() ||
-      pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE ||
+      pool.info.cache_mode == RADOS_CACHEMODE_NONE ||
       pool.info.tier_of < 0 ||
       !get_osdmap()->have_pg_pool(pool.info.tier_of)) {
     agent_clear();

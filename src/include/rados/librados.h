@@ -226,6 +226,32 @@ struct rados_cluster_stat_t {
 };
 
 /**
+ * @defgroup librados_h_cachemode cache modes
+ *
+ * @{
+ */
+/** @cond TODO_enums_not_yet_in_asphyxiate */
+typedef enum {
+  RADOS_CACHEMODE_NONE = 0,                  ///< no caching
+  RADOS_CACHEMODE_WRITEBACK = 1,             ///< write to cache, flush later
+  RADOS_CACHEMODE_FORWARD = 2,               ///< forward if not in cache
+  RADOS_CACHEMODE_READONLY = 3,              ///< handle reads, forward writes [not strongly consistent]
+  RADOS_CACHEMODE_READFORWARD = 4            ///< forward reads, write to cache flush later
+} rados_cache_mode_t;
+/** @endcond */
+/** @} */
+
+struct rados_pool_tier_t {
+  uint64_t *tiers;      ///< pools that are tiers of us
+  size_t tiers_len;      ///< number of entries in the 'tiers' array
+  int64_t tier_of;         ///< pool for which we are a tier
+  // Note that write wins for read+write ops
+  int64_t read_tier;       ///< pool/tier for objecter to direct reads to
+  int64_t write_tier;      ///< pool/tier for objecter to direct writes to
+  rados_cache_mode_t cache_mode;  ///< cache pool mode
+};
+
+/**
  * @typedef rados_write_op_t
  *
  * An object write operation stores a number of operations which can be
@@ -708,6 +734,18 @@ int rados_pool_create_with_crush_rule(rados_t cluster, const char *pool_name,
  */
 int rados_pool_create_with_all(rados_t cluster, const char *pool_name, uint64_t auid,
 			       uint8_t crush_rule_num);
+
+/**
+ * Retrieves tiering information about the pool.
+ *
+ * The content of tiers is undefined if an error is returned.
+ * The caller must free tiers->tiers when finished.
+ * @param cluster the cluster the pool is in
+ * @param pool_id ID of the pool to inspect
+ * @param[out] pointer to tier data
+ * @returns 0 on success, negative error code on failure
+ */
+int rados_pool_get_tiers(rados_t cluster, int64_t pool_id, struct rados_pool_tier_t *tiers);
 
 /**
  * Delete a pool and all data inside it

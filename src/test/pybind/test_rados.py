@@ -1,6 +1,6 @@
 from nose.tools import eq_ as eq, assert_raises
 from rados import (Rados, Error, Object, ObjectExists, ObjectNotFound,
-                   ANONYMOUS_AUID, ADMIN_AUID)
+                   ANONYMOUS_AUID, ADMIN_AUID, CacheMode)
 import threading
 import json
 import errno
@@ -87,6 +87,48 @@ class TestRados(object):
         self.rados.create_pool('a' * 500)
         eq(set(['a' * 500]), self.list_non_default_pools())
         self.rados.delete_pool('a' * 500)
+
+    def test_get_pool_tiers(self):
+        self.rados.create_pool('foo')
+        try:
+            self.rados.create_pool('foo-cache')
+            try:
+                pool_id = self.rados.pool_lookup('foo')
+                tier_pool_id = self.rados.pool_lookup('foo-cache')
+
+                cmd = {"prefix":"osd tier add", "pool":"foo", "tierpool":"foo-cache", "force_nonempty":""}
+                ret, buf, errs = self.rados.mon_command(json.dumps(cmd), '', timeout=30)
+                eq(ret, 0)
+
+                try:
+                    cmd = {"prefix":"osd tier cache-mode", "pool":"foo-cache", "tierpool":"foo-cache", "mode":"readonly"}
+                    ret, buf, errs = self.rados.mon_command(json.dumps(cmd), '', timeout=30)
+                    eq(ret, 0)
+
+                    eq(self.rados.wait_for_latest_osdmap(), 0)
+
+                    tiers = self.rados.get_pool_tiers(pool_id)
+                    eq([tier_pool_id], tiers["tiers"])
+                    eq(-1, tiers["tier_of"])
+                    eq(-1, tiers["read_tier"])
+                    eq(-1, tiers["write_tier"])
+                    eq(CacheMode.none, tiers["cache_mode"])
+
+                    tiers = self.rados.get_pool_tiers(tier_pool_id)
+                    eq([], tiers["tiers"])
+                    eq(pool_id, tiers["tier_of"])
+                    eq(-1, tiers["read_tier"])
+                    eq(-1, tiers["write_tier"])
+                    eq(CacheMode.readonly, tiers["cache_mode"])
+
+                finally:
+                    cmd = {"prefix":"osd tier remove", "pool":"foo", "tierpool":"foo-cache"}
+                    ret, buf, errs = self.rados.mon_command(json.dumps(cmd), '', timeout=30)
+                    eq(ret, 0)
+            finally:
+                self.rados.delete_pool('foo-cache')
+        finally:
+            self.rados.delete_pool('foo')
 
     def test_get_fsid(self):
         fsid = self.rados.get_fsid()

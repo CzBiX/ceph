@@ -52,6 +52,15 @@ namespace librados
     uint64_t num_rd, num_rd_kb, num_wr, num_wr_kb;
   };
 
+  struct pool_tier_t {
+    std::set<uint64_t> tiers;      ///< pools that are tiers of us
+    int64_t tier_of;         ///< pool for which we are a tier
+    // Note that write wins for read+write ops
+    int64_t read_tier;       ///< pool/tier for objecter to direct reads to
+    int64_t write_tier;      ///< pool/tier for objecter to direct writes to
+    rados_cache_mode_t cache_mode;  ///< cache pool mode
+  };
+
   typedef struct {
     std::string client;
     std::string cookie;
@@ -909,6 +918,7 @@ namespace librados
     int pool_create_async(const char *name, PoolAsyncCompletion *c);
     int pool_create_async(const char *name, uint64_t auid, PoolAsyncCompletion *c);
     int pool_create_async(const char *name, uint64_t auid, uint8_t crush_rule, PoolAsyncCompletion *c);
+    int pool_get_tiers(int64_t pool_id, pool_tier_t *tiers);
     int pool_delete(const char *name);
     int pool_delete_async(const char *name, PoolAsyncCompletion *c);
     int64_t pool_lookup(const char *name);

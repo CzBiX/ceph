@@ -1216,7 +1216,7 @@ void pg_pool_t::decode(bufferlist::iterator& bl)
     ::decode(tier_of, bl);
     __u8 v;
     ::decode(v, bl);
-    cache_mode = (cache_mode_t)v;
+    cache_mode = (rados_cache_mode_t)v;
     ::decode(read_tier, bl);
     ::decode(write_tier, bl);
   }
@@ -1309,7 +1309,7 @@ void pg_pool_t::generate_test_instances(list<pg_pool_t*>& o)
   a.tiers.insert(0);
   a.tiers.insert(1);
   a.tier_of = 2;
-  a.cache_mode = CACHEMODE_WRITEBACK;
+  a.cache_mode = RADOS_CACHEMODE_WRITEBACK;
   a.read_tier = 1;
   a.write_tier = 1;
   a.hit_set_params = HitSet::Params(new BloomHitSet::Params);

@@ -5,7 +5,7 @@ Copyright 2011, Hannu Valtonen <hannu.valtonen@ormod.com>
 """
 from ctypes import CDLL, c_char_p, c_size_t, c_void_p, c_char, c_int, c_long, \
     c_ulong, create_string_buffer, byref, Structure, c_uint64, c_ubyte, \
-    pointer, CFUNCTYPE
+    pointer, CFUNCTYPE, POINTER, c_int64
 from ctypes.util import find_library
 import ctypes
 import errno
@@ -15,6 +15,53 @@ from datetime import datetime
 
 ANONYMOUS_AUID = 0xffffffffffffffff
 ADMIN_AUID = 0
+
+# The enum module can't be guaranteed to exist, so emulate it.
+# We don't try to make it impossible to create new CacheMode instances or modify existing ones,
+# just difficult to do accidentally.
+class CacheMode(object):
+   __members__ = dict()
+   __reverse_members__ = dict()
+   __locked__ = False
+   def __new__(cls, *args):
+       if len(args) == 1:
+           return CacheMode.__reverse_members__[args[0]]
+       return super(CacheMode, cls).__new__(cls, *args)
+   def __init__(self, *args):
+       if len(args) == 1:
+           pass
+       elif len(args) == 2:
+           if CacheMode.__locked__:
+               raise Exception("Enum is locked, can't create more instances")
+           self.name = args[0]
+           self.value = args[1]
+           CacheMode.__members__[self.name] = self
+           CacheMode.__reverse_members__[self.value] = self
+       else:
+           raise Exception()
+   def __setattr__(self, name, value):
+       if CacheMode.__locked__:
+           raise Exception("Enum is locked, can't modify instances")
+       object.__setattr__(self, name, value)
+   def __str__(self):
+       return "CacheMode." + self.name
+   def __repr__(self):
+       return "<CacheMode.%s: %d>" % (self.name, self.value)
+   class __metaclass__(type):
+       def __getattr__(self, name):
+           try:
+               return self.__members__[name]
+           except KeyError:
+               raise AttributeError(name)
+       def __getitem__(self, name):
+           return self.__members__[name]
+
+CacheMode("none", 0)
+CacheMode("writeback", 1)
+CacheMode("forward", 2)
+CacheMode("readonly", 3)
+CacheMode("readforward", 4)
+CacheMode.__locked__ = True
 
 class Error(Exception):
     """ `Error` class, derived from `Exception` """
@@ -120,6 +167,15 @@ class rados_cluster_stat_t(Structure):
                 ("kb_used", c_uint64),
                 ("kb_avail", c_uint64),
                 ("num_objects", c_uint64)]
+
+class rados_pool_tier_t(Structure):
+    """ Tiering information for a pool """
+    _fields_ = [("tiers", POINTER(c_uint64)),
+                ("tiers_len", c_size_t),
+                ("tier_of", c_int64),
+                ("read_tier", c_int64),
+                ("write_tier", c_int64),
+                ("cache_mode", c_int)]
 
 class Version(object):
     """ Version information """
@@ -470,6 +526,56 @@ Rados object in state %s." % (self.state))
         else:
             raise make_ex(ret, "error looking up pool '%s'" % pool_name)
 
+    def pool_lookup(self, pool_name):
+        """
+        Returns a pool's ID based on its name.
+
+        :param pool_name: name of the pool to look up
+        :type pool_name: str
+
+        :raises: :class:`TypeError`, :class:`Error`
+        :returns: int - pool ID, or None if it doesn't exist
+        """
+        self.require_state("connected")
+        if not isinstance(pool_name, str):
+            raise TypeError('pool_name must be a string')
+        ret = run_in_thread(self.librados.rados_pool_lookup,
+                            (self.cluster, c_char_p(pool_name)))
+        if (ret >= 0):
+            return int(ret)
+        elif (ret == -errno.ENOENT):
+            return None
+        else:
+            raise make_ex(ret, "error looking up pool '%s'" % pool_name)
+
+    def pool_reverse_lookup(self, pool_id):
+        """
+        Returns a pool's name based on its ID.
+
+        :param pool_id: ID of the pool to look up
+        :type pool_id: int
+
+        :raises: :class:`TypeError`, :class:`Error`
+        :returns: string - pool name, or None if it doesn't exist
+        """
+        self.require_state("connected")
+        if not isinstance(pool_id, int):
+            raise TypeError('pool_id must be an integer')
+        size = c_size_t(512)
+        while True:
+            c_name = create_string_buffer(size.value)
+            ret = run_in_thread(self.librados.rados_pool_reverse_lookup,
+                                (self.cluster, c_int64(pool_id), byref(c_name), size))
+            if ret > size.value:
+                size = c_size_t(ret)
+            elif ret == -errno.ENOENT:
+                return None
+            elif ret < 0:
+                raise make_ex(ret, "error reverse looking up pool '%s'" % pool_id)
+            else:
+                return c_name.value
+                break
+
     def create_pool(self, pool_name, auid=None, crush_rule=None):
         """
         Create a pool:
@@ -512,6 +618,42 @@ Rados object in state %s." % (self.state))
                                 c_uint64(auid), c_ubyte(crush_rule)))
         if ret < 0:
             raise make_ex(ret, "error creating pool '%s'" % pool_name)
+
+    def get_pool_tiers(self, pool_id):
+        """
+        Get pool usage statistics
+
+        :returns: dict - contains the following keys:
+
+            - ``tiers`` (sequence of int) - IDs of pools that are tiers of us
+
+            - ``tier_of`` (int) - ID of pol we are a tier of
+
+            - ``read_tier`` (int) - ID of pool that reads should be directed to
+
+            - ``write_tier`` (int) - ID of pool that writes should be directed to
+
+            - ``cache_mode`` (CacheMode) - cache mode
+        """
+        self.require_state("connected")
+        if not isinstance(pool_id, int):
+            raise TypeError('pool_id must be an int')
+        tiers = rados_pool_tier_t()
+        ret = run_in_thread(self.librados.rados_pool_get_tiers,
+                            (self.cluster, c_int64(pool_id), byref(tiers)))
+        if ret < 0:
+            run_in_thread(self.librados.rados_buffer_free, (tiers.tiers,))
+            raise make_ex(ret, "get_pool_tiers(%d)" % pool_id)
+        tierslist = []
+        for i in range(tiers.tiers_len):
+            tierslist.append(tiers.tiers[i])
+        retval = {'tiers': tierslist,
+                'tier_of': tiers.tier_of,
+                'read_tier': tiers.read_tier,
+                'write_tier': tiers.write_tier,
+                'cache_mode': CacheMode(tiers.cache_mode) }
+        run_in_thread(self.librados.rados_buffer_free, (tiers.tiers,))
+        return retval
 
     def delete_pool(self, pool_name):
         """
@@ -684,6 +826,10 @@ Rados object in state %s." % (self.state))
             run_in_thread(self.librados.rados_buffer_free, (outsp.contents,))
 
         return (ret, my_outbuf, my_outs)
+
+    def wait_for_latest_osdmap(self):
+        self.require_state("connected")
+        return run_in_thread(self.librados.rados_wait_for_latest_osdmap, (self.cluster,))
 
 class ObjectIterator(object):
     """rados.Ioctx Object iterator"""

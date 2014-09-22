@@ -3709,7 +3709,7 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
     }
     string force;
     cmd_getval(g_ceph_context,cmdmap, "force", force);
-    if (p.cache_mode != pg_pool_t::CACHEMODE_NONE &&
+    if (p.cache_mode != RADOS_CACHEMODE_NONE &&
 	force != "--yes-i-really-mean-it") {
       ss << "splits in cache pools must be followed by scrubs and leave sufficient free space to avoid overfilling.  use --yes-i-really-mean-it to force.";
       return -EPERM;
@@ -5617,7 +5617,7 @@ done:
     }
     string modestr;
     cmd_getval(g_ceph_context, cmdmap, "mode", modestr);
-    pg_pool_t::cache_mode_t mode = pg_pool_t::get_cache_mode_from_str(modestr);
+    rados_cache_mode_t mode = pg_pool_t::get_cache_mode_from_str(modestr);
     if (mode < 0) {
       ss << "'" << modestr << "' is not a valid cache mode";
       err = -EINVAL;
@@ -5655,26 +5655,26 @@ done:
     // it is the only committed state thus far.  We will blantly squash
     // whatever mode is on the pending state.
 
-    if (p->cache_mode == pg_pool_t::CACHEMODE_WRITEBACK &&
-        (mode != pg_pool_t::CACHEMODE_FORWARD &&
-	  mode != pg_pool_t::CACHEMODE_READFORWARD)) {
+    if (p->cache_mode == RADOS_CACHEMODE_WRITEBACK &&
+        (mode != RADOS_CACHEMODE_FORWARD &&
+	  mode != RADOS_CACHEMODE_READFORWARD)) {
       ss << "unable to set cache-mode '" << pg_pool_t::get_cache_mode_name(mode)
          << "' on a '" << pg_pool_t::get_cache_mode_name(p->cache_mode)
          << "' pool; only '"
-         << pg_pool_t::get_cache_mode_name(pg_pool_t::CACHEMODE_FORWARD)
+         << pg_pool_t::get_cache_mode_name(RADOS_CACHEMODE_FORWARD)
 	 << "','"
-         << pg_pool_t::get_cache_mode_name(pg_pool_t::CACHEMODE_READFORWARD)
+         << pg_pool_t::get_cache_mode_name(RADOS_CACHEMODE_READFORWARD)
         << "' allowed.";
       err = -EINVAL;
       goto reply;
     }
-    if ((p->cache_mode == pg_pool_t::CACHEMODE_READFORWARD &&
-        (mode != pg_pool_t::CACHEMODE_WRITEBACK &&
-	  mode != pg_pool_t::CACHEMODE_FORWARD)) ||
+    if ((p->cache_mode == RADOS_CACHEMODE_READFORWARD &&
+        (mode != RADOS_CACHEMODE_WRITEBACK &&
+	  mode != RADOS_CACHEMODE_FORWARD)) ||
 
-        (p->cache_mode == pg_pool_t::CACHEMODE_FORWARD &&
-        (mode != pg_pool_t::CACHEMODE_WRITEBACK &&
-	  mode != pg_pool_t::CACHEMODE_READFORWARD))) {
+        (p->cache_mode == RADOS_CACHEMODE_FORWARD &&
+        (mode != RADOS_CACHEMODE_WRITEBACK &&
+	  mode != RADOS_CACHEMODE_READFORWARD))) {
 
       const pool_stat_t& tier_stats =
         mon->pgmon()->pg_map.get_pg_pool_sum_stat(pool_id);
@@ -5745,7 +5745,7 @@ done:
       goto reply;
     }
     string modestr = g_conf->osd_tier_default_cache_mode;
-    pg_pool_t::cache_mode_t mode = pg_pool_t::get_cache_mode_from_str(modestr);
+    rados_cache_mode_t mode = pg_pool_t::get_cache_mode_from_str(modestr);
     if (mode < 0) {
       ss << "osd tier cache default mode '" << modestr << "' is not a valid cache mode";
       err = -EINVAL;
