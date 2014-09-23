@@ -31,6 +31,7 @@
 #include "common/LogClient.h"
 #include "common/TrackedOp.h"
 #include "common/Finisher.h"
+#include "common/cmdparse.h"
 
 #include "MDSMap.h"
 
@@ -450,8 +451,13 @@ private:
   bool handle_deferrable_message(Message *m);
   
   // special message types
-  int _handle_command(
+  int _handle_command_legacy(
       std::vector<std::string> args,
+      bufferlist const &inbl,
+      bufferlist *outbl,
+      std::string *outs);
+  int _handle_command(
+      const cmdmap_t &cmdmap,
       bufferlist const &inbl,
       bufferlist *outbl,
       std::string *outs);

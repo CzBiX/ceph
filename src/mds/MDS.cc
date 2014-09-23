@@ -17,6 +17,7 @@
 #include "global/signal_handler.h"
 
 #include "include/types.h"
+#include "include/str_list.h"
 #include "common/entity_name.h"
 #include "common/Clock.h"
 #include "common/signal.h"
@@ -805,27 +806,182 @@ void MDS::check_ops_in_flight()
 void MDS::handle_command(MCommand *m)
 {
   // FIXME authorize based on m->get_connection()
-  bufferlist outbl;
+  
+  int r = 0;
+  cmdmap_t cmdmap;
+  std::stringstream ss;
   std::string outs;
-  int r = _handle_command(m->cmd, m->get_data(), &outbl, &outs);
-  MCommandReply *reply = new MCommandReply(r, outs);
-  reply->set_tid(m->get_tid());
-  reply->set_data(outbl);
-  m->get_connection()->send_message(reply); // FIXME is gconnection guaranteed to be set here?
+  bufferlist outbl;
+
+  if (m->cmd.empty()) {
+    ss << "no command given";
+    outs = ss.str();
+  } else if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
+    r = -EINVAL;
+    outs = ss.str();
+  } else {
+    r = _handle_command(cmdmap, m->get_data(), &outbl, &outs);
+  }
+
+  if (m->get_connection()) {
+    MCommandReply *reply = new MCommandReply(r, outs);
+    reply->set_tid(m->get_tid());
+    reply->set_data(outbl);
+    m->get_connection()->send_message(reply);
+  }
 
   m->put();
 }
+
+
+struct MDSCommand {
+  string cmdstring;
+  string helpstring;
+  string module;
+  string perm;
+  string availability;
+} mds_commands[] = {
+
+#define COMMAND(parsesig, helptext, module, perm, availability) \
+  {parsesig, helptext, module, perm, availability},
+
+COMMAND("injectargs " \
+	"name=injected_args,type=CephString,n=N",
+	"inject configuration arguments into running MDS",
+	"mds", "rw", "cli,rest")
+COMMAND("exit",
+	"Terminate this MDS",
+	"mds", "rw", "cli,rest")
+COMMAND("respawn",
+	"Restart this MDS",
+	"mds", "rw", "cli,rest")
+COMMAND("session kill " \
+        "name=session_id,type=CephInt",
+	"End a client session",
+	"mds", "rw", "cli,rest")
+COMMAND("cpu_profiler " \
+	"name=arg,type=CephChoices,strings=status|flush",
+	"run cpu profiling on daemon", "mds", "rw", "cli,rest")
+COMMAND("heap " \
+	"name=heapcmd,type=CephChoices,strings=dump|start_profiler|stop_profiler|release|stats", \
+	"show heap usage info (available only if compiled with tcmalloc)", \
+	"mds", "rw", "cli,rest")
+};
+
+// FIXME: reinstate dumpcache as an admin socket command
+//  -- it makes no sense for it to be a remote command when
+//     the output is a local file
+// FIXME: reinstate issue_caps, try_eval, fragment_dir, merge_dir, export_dir
+//  *if* it makes sense to do so (or should these be admin socket things?)
 
 /* This function DOES put the passed message before returning*/
 void MDS::handle_command(MMonCommand *m)
 {
   bufferlist outbl;
   std::string outs;
-  _handle_command(m->cmd, m->get_data(), &outbl, &outs);
+  _handle_command_legacy(m->cmd, m->get_data(), &outbl, &outs);
   m->put();
 }
 
 int MDS::_handle_command(
+    const cmdmap_t &cmdmap,
+    bufferlist const &inbl,
+    bufferlist *outbl,
+    std::string *outs)
+{
+  assert(outbl != NULL);
+  assert(outs != NULL);
+
+  std::stringstream ds;
+  std::stringstream ss;
+  std::string prefix;
+  cmd_getval(cct, cmdmap, "prefix", prefix);
+
+  int r = 0;
+
+  if (prefix == "get_command_descriptions") {
+    int cmdnum = 0;
+    JSONFormatter *f = new JSONFormatter();
+    f->open_object_section("command_descriptions");
+    for (MDSCommand *cp = mds_commands;
+	 cp < &mds_commands[ARRAY_SIZE(mds_commands)]; cp++) {
+
+      ostringstream secname;
+      secname << "cmd" << setfill('0') << std::setw(3) << cmdnum;
+      dump_cmddesc_to_json(f, secname.str(), cp->cmdstring, cp->helpstring,
+			   cp->module, cp->perm, cp->availability);
+      cmdnum++;
+    }
+    f->close_section();	// command_descriptions
+
+    f->flush(ds);
+    delete f;
+  } else if (prefix == "injectargs") {
+    vector<string> argsvec;
+    cmd_getval(cct, cmdmap, "injected_args", argsvec);
+
+    if (argsvec.empty()) {
+      r = -EINVAL;
+      ss << "ignoring empty injectargs";
+      goto out;
+    }
+    string args = argsvec.front();
+    for (vector<string>::iterator a = ++argsvec.begin(); a != argsvec.end(); ++a)
+      args += " " + *a;
+    cct->_conf->injectargs(args, &ss);
+  } else if (prefix == "exit") {
+    // TODO: send response before executing!
+    suicide();
+  }
+  else if (prefix == "respawn") {
+    // TODO: send response before executing!
+    respawn();
+  } else if (prefix == "session kill") {
+    // FIXME harmonize `session kill` with admin socket session evict
+    int64_t session_id = 0;
+    bool got = cmd_getval(cct, cmdmap, "session_id", session_id);
+    assert(got);
+    Session *session = sessionmap.get_session(entity_name_t(CEPH_ENTITY_TYPE_CLIENT, session_id));
+
+    if (session) {
+      server->kill_session(session, NULL);
+    } else {
+      r = -ENOENT;
+      ss << "session '" << session_id << "' not found";
+    }
+  } else if (prefix == "heap") {
+    if (!ceph_using_tcmalloc()) {
+      r = -EOPNOTSUPP;
+      ss << "could not issue heap profiler command -- not using tcmalloc!";
+    } else {
+      string heapcmd;
+      cmd_getval(cct, cmdmap, "heapcmd", heapcmd);
+      vector<string> heapcmd_vec;
+      get_str_vec(heapcmd, heapcmd_vec);
+      ceph_heap_profiler_handle_command(heapcmd_vec, ds);
+    }
+  } else if (prefix == "cpu_profiler") {
+    string arg;
+    cmd_getval(cct, cmdmap, "arg", arg);
+    vector<string> argvec;
+    get_str_vec(arg, argvec);
+    cpu_profiler_handle_command(argvec, ds);
+  } else {
+    std::ostringstream ss;
+    ss << "unrecognized command! " << prefix;
+    r = -EINVAL;
+  }
+
+out:
+  *outs = ss.str();
+  outbl->append(ds);
+  return r;
+}
+
+/**
+ * Legacy "mds tell", takes a simple array of args
+ */
+int MDS::_handle_command_legacy(
     std::vector<std::string> args,
     bufferlist const &inbl,
     bufferlist *outbl,
