@@ -16,8 +16,10 @@
 
 from nose.tools import eq_ as eq
 from nose.tools import *
+import unittest
 
-from ceph_argparse import validate_command, parse_json_funcsigs
+from ceph_argparse import validate_command, parse_json_funcsigs, _parse_mds_spec
+from ceph_argparse import ArgumentError
 
 import os
 import re
@@ -1132,6 +1134,31 @@ class TestConfigKey(TestArgparse):
 
     def test_list(self):
         self.check_no_arg('config-key', 'list')
+
+class TestMdsId(unittest.TestCase):
+    def test_valid_cases(self):
+        self.assertEqual(_parse_mds_spec("*"), ("*", None, None))
+        self.assertEqual(_parse_mds_spec("0"), (None, None, 0))
+        self.assertEqual(_parse_mds_spec("[gid=123]"), (None, 123, None))
+        self.assertEqual(_parse_mds_spec("[rank=1]"), (None, None, 1))
+        self.assertEqual(_parse_mds_spec("[id=bloo]"), ("bloo", None, None))
+
+    def test_invalid_cases(self):
+        with self.assertRaises(ArgumentError):
+            _parse_mds_spec("rhubarb"), (None, None, 0)
+
+        with self.assertRaises(ArgumentError):
+            _parse_mds_spec("[barf=0]"), (None, None, 0)
+
+        with self.assertRaises(ArgumentError):
+            _parse_mds_spec("[gid=barf]"), (None, None, 0)
+
+        with self.assertRaises(ArgumentError):
+            _parse_mds_spec("[rank=barf]"), (None, None, 0)
+
+        with self.assertRaises(ArgumentError):
+            _parse_mds_spec("[id=spa cious]"), (None, None, 0)
+
 # Local Variables:
 # compile-command: "cd ../.. ; make -j4 && 
 #  PYTHONPATH=pybind nosetests --stop \
