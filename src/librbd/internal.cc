@@ -418,10 +418,20 @@ namespace librbd {
 
     for (std::list<string>::const_iterator it = pools.begin();
 	 it != pools.end(); ++it) {
+      int64_t pool_id = rados.pool_lookup(it->c_str());
+      librados::pool_tier_t tier;
+      int r = rados.pool_get_tiers(pool_id, &tier);
+      if (r < 0) {
+	return r;
+      }
+      if (tier.tier_of >= 0) {
+	// pool is a cache; skip it
+	continue;
+      }
       IoCtx ioctx;
       rados.ioctx_create(it->c_str(), ioctx);
       set<string> image_ids;
-      int r = cls_client::get_children(&ioctx, RBD_CHILDREN,
+      r = cls_client::get_children(&ioctx, RBD_CHILDREN,
 				       parent_spec, image_ids);
       if (r < 0 && r != -ENOENT) {
 	lderr(cct) << "Error reading list of children from pool " << *it
@@ -637,6 +647,16 @@ namespace librbd {
     rados.pool_list(pools);
     std::set<std::string> children;
     for (std::list<std::string>::const_iterator it = pools.begin(); it != pools.end(); ++it) {
+      int64_t pool_id = rados.pool_lookup(it->c_str());
+      librados::pool_tier_t tier;
+      r = rados.pool_get_tiers(pool_id, &tier);
+      if (r < 0) {
+	return r;
+      }
+      if (tier.tier_of >= 0) {
+	// pool is a cache; skip it
+	continue;
+      }
       IoCtx pool_ioctx;
       r = rados.ioctx_create(it->c_str(), pool_ioctx);
       if (r < 0) {
