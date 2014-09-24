@@ -915,6 +915,13 @@ public:
    */
   void validate_disk_state(validated_data *results,
                            Context *fin);
+  void validate_backtrace(validated_data *results,
+			  bufferlist bl,
+			  Context *on_finish,
+			  int rval);
+  void validate_dirfrags(validated_data *results,
+			 Context *on_finish,
+			 int rval);
   static void dump_validation_results(const validated_data& results,
                                       Formatter *f);
 private:
