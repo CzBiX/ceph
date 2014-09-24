@@ -805,15 +805,27 @@ void MDS::check_ops_in_flight()
 /* This function DOES put the passed message before returning*/
 void MDS::handle_command(MCommand *m)
 {
-  // FIXME authorize based on m->get_connection()
-  
+  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
+  if (!session) {
+    // No session?  Drop.
+    m->put();
+    return;
+  }
+
   int r = 0;
   cmdmap_t cmdmap;
   std::stringstream ss;
   std::string outs;
   bufferlist outbl;
 
-  if (m->cmd.empty()) {
+  if (!session->auth_caps.get_tell()) {
+    dout(1) << __func__
+      << ": received command from client without `tell` capability: "
+      << m->get_connection()->peer_addr << dendl;
+
+    ss << "permission denied";
+    r = -EPERM;
+  } else if (m->cmd.empty()) {
     ss << "no command given";
     outs = ss.str();
   } else if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
@@ -823,12 +835,10 @@ void MDS::handle_command(MCommand *m)
     r = _handle_command(cmdmap, m->get_data(), &outbl, &outs);
   }
 
-  if (m->get_connection()) {
-    MCommandReply *reply = new MCommandReply(r, outs);
-    reply->set_tid(m->get_tid());
-    reply->set_data(outbl);
-    m->get_connection()->send_message(reply);
-  }
+  MCommandReply *reply = new MCommandReply(r, outs);
+  reply->set_tid(m->get_tid());
+  reply->set_data(outbl);
+  m->get_connection()->send_message(reply);
 
   m->put();
 }
@@ -2513,6 +2523,8 @@ bool MDS::ms_verify_authorizer(Connection *con, int peer_type,
 	       << ", new/authorizing con " << con << dendl;
       con->set_priv(s->get());
 
+
+
       // Wait until we fully accept the connection before setting
       // s->connection.  In particular, if there are multiple incoming
       // connection attempts, they will all get their authorizer
@@ -2524,6 +2536,24 @@ bool MDS::ms_verify_authorizer(Connection *con, int peer_type,
       // connect attempt(s).  (Normal reconnects that don't follow MDS
       // recovery are reconnected to the existing con by the
       // messenger.)
+    }
+
+    bufferlist::iterator p = caps_info.caps.begin();
+    string auth_cap_str;
+    try {
+      ::decode(auth_cap_str, p);
+
+      dout(10) << __func__ << ": parsing auth_cap_str='" << auth_cap_str << "'" << dendl;
+      int parse_r = s->auth_caps.parse(auth_cap_str);
+      if (parse_r != 0) {
+        dout(1) << __func__ << ": auth cap parse error: " << cpp_strerror(parse_r)
+          << " parsing '" << auth_cap_str << "'" << dendl;
+      }
+    } catch (buffer::error& e) {
+      // Assume legacy auth, defaults to:
+      //  * permit all filesystem ops
+      //  * permit no `tell` ops
+      dout(1) << __func__ << ": cannot decode auth caps bl of length " << caps_info.caps.length() << dendl;
     }
 
     /*
