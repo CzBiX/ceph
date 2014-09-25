@@ -308,6 +308,7 @@ public:
   void handle_client_reply(MClientReply *reply);
 
   bool   initialized;
+  bool   authenticated;
   bool   mounted;
   bool   unmounting;
 
@@ -444,6 +445,7 @@ protected:
   void ms_handle_remote_reset(Connection *con);
   bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bool force_new);
 
+  int authenticate();
 
  public:
   void set_filer_flags(int flags);

@@ -167,7 +167,8 @@ Client::Client(Messenger *m, MonClient *mc)
     tick_event(NULL),
     monclient(mc), messenger(m), whoami(m->get_myname().num()),
     next_command_tid(1),
-    initialized(false), mounted(false), unmounting(false),
+    initialized(false), authenticated(false),
+    mounted(false), unmounting(false),
     local_osd(-1), local_osd_epoch(0),
     unsafe_sync_write(0),
     client_lock("Client::client_lock")
@@ -4120,6 +4121,32 @@ int Client::resolve_mds(
 
 
 /**
+ * Authenticate with mon and establish global ID
+ */
+int Client::authenticate()
+{
+  assert(client_lock.is_locked());
+
+  if (authenticated) {
+    return 0;
+  }
+
+  client_lock.Unlock();
+  int r = monclient->authenticate(cct->_conf->client_mount_timeout);
+  client_lock.Lock();
+  if (r < 0) {
+    return r;
+  }
+
+  whoami = monclient->get_global_id();
+  messenger->set_myname(entity_name_t::CLIENT(whoami.v));
+  authenticated = true;
+
+  return 0;
+}
+
+
+/**
  *
  * @mds_id null-terminated ID of target MDS, or NULL
  * @mds_gid GID of target MDS, or 0
@@ -4140,17 +4167,11 @@ int Client::mds_command(
 
   assert(initialized);
 
-  // FIXME this init part is common to mount()
-  // >>>
-  client_lock.Unlock();
-  int r = monclient->authenticate(cct->_conf->client_mount_timeout);
-  client_lock.Lock();
-  if (r < 0)
+  int r;
+  r = authenticate();
+  if (r < 0) {
     return r;
-
-  whoami = monclient->get_global_id();
-  messenger->set_myname(entity_name_t::CLIENT(whoami.v));
-  // <<<
+  }
 
   // Block until we have an MDSMap to resolve IDs
   if (mdsmap->get_epoch() == 0) {
@@ -4249,14 +4270,10 @@ int Client::mount(const std::string &mount_root)
     return 0;
   }
 
-  client_lock.Unlock();
-  int r = monclient->authenticate(cct->_conf->client_mount_timeout);
-  client_lock.Lock();
-  if (r < 0)
+  int r = authenticate();
+  if (r < 0) {
     return r;
-  
-  whoami = monclient->get_global_id();
-  messenger->set_myname(entity_name_t::CLIENT(whoami.v));
+  }
 
   mounted = true;
 
