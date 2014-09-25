@@ -2034,6 +2034,7 @@ void Client::handle_mds_map(MMDSMap* m)
         ss << "MDS " << op_mds_gid << " went away";
         *(i->second.outs) = ss.str();
       }
+      i->second.con->mark_down();
       if (i->second.on_finish) {
         i->second.on_finish->complete(-ETIMEDOUT);
       }
@@ -4188,6 +4189,7 @@ int Client::mds_command(
     op.outbl = outbl;
     op.outs = outs;
     op.mds_gid = *target;
+    op.con = conn;
     commands[op.tid] = op;
 
     ldout(cct, 4) << __func__ << ": new command op to " << *target
@@ -4224,6 +4226,8 @@ void Client::handle_command_reply(MCommandReply *m)
   if (op.outs) {
     *op.outs = m->rs;
   }
+
+  op.con->mark_down();
 
   if (op.on_finish) {
     op.on_finish->complete(m->r);
